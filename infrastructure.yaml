@@ -1,0 +1,116 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Deploy Imagen-4 Lambda with minimal S3 permissions + public Function URL
+
+Parameters:
+  CodeS3Bucket:
+    Type: String
+    Description: S3 bucket containing the Lambda deployment package
+  CodeS3Key:
+    Type: String
+    Description: S3 key (path) for the zipped Lambda package
+  GeminiAPIKey:
+    Type: String
+    Description: API Key for Gemini Imagen
+  GeminiOutputBucket:
+    Type: String
+    Description: Output Bucket name for gemini imagen images (must be public)
+  GeminiOutputFolder:
+    Type: String
+    Description: Output Folder for Gemini Imagen Generated Images
+  GeminiOutputBucketRegion:
+    Type: String
+    Default: us-east-1
+    Description: Output bucket region
+
+Resources:
+
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: ImagenLambdaExecutionRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: LambdaLoggingPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: arn:aws:logs:*:*:*
+        - PolicyName: S3PutObjectPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                Resource: 
+                  !Sub arn:aws:s3:::${GeminiOutputBucket}/*
+
+  GenerateImagenFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: GenerateImagenFunction
+      Description: Generates images via Google Imagen 4 and uploads to S3
+      Runtime: provided.al2023
+      Handler: bootstrap
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        S3Bucket: !Ref CodeS3Bucket
+        S3Key:   !Ref CodeS3Key
+      MemorySize: 512
+      Timeout:    300
+      Environment:
+        Variables:
+          OUTPUT_BUCKET: !Ref GeminiOutputBucket
+          OUTPUT_FOLDER: !Ref GeminiOutputFolder
+          API_KEY:        !Ref GeminiAPIKey
+          OUTPUT_BUCKET_REGION: !Ref GeminiOutputBucketRegion
+
+  # PUBLIC FUNCTION URL (no auth, CORS enabled)
+  GenerateImagenFunctionUrl:
+    Type: AWS::Lambda::Url
+    Properties:
+      TargetFunctionArn: !GetAtt GenerateImagenFunction.Arn
+      AuthType: NONE
+      Cors:
+        AllowOrigins:
+          - '*' 
+        AllowMethods:
+          - GET
+          - POST
+        AllowHeaders:
+          - '*' 
+        MaxAge: 3600
+
+  # Grant the Function URL public invoke permissions
+  FunctionUrlInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref GenerateImagenFunction
+      Action: lambda:InvokeFunctionUrl
+      Principal: "*"                      # allow anyone
+      FunctionUrlAuthType: NONE
+
+Outputs:
+  LambdaFunctionArn:
+    Description: ARN of the deployed Lambda function
+    Value: !GetAtt GenerateImagenFunction.Arn
+
+  LambdaExecutionRoleArn:
+    Description: ARN of the IAM role assumed by the Lambda
+    Value: !GetAtt LambdaExecutionRole.Arn
+
+  FunctionInvokeUrl:
+    Description: Public URL to invoke the Lambda (CORS-enabled)
+    Value: !Ref GenerateImagenFunctionUrl
